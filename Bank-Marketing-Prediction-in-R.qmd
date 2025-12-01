@@ -1,0 +1,430 @@
+---
+title: "ProjectPhase3"
+format: pdf
+execute:
+  eval: true
+  cache: true
+  freeze: auto
+editor: visual
+---
+
+## 1. Model: **Logistic Regression**
+
+```{r}
+library(tidyverse) 
+
+#Import Data 
+bank_data<- read.csv2("bank-full.csv")
+```
+
+```{r}
+str(bank_data)
+summary(bank_data)
+
+# set the target as factor "y"
+bank_data$y <- factor(bank_data$y, levels = c("no", "yes"))
+```
+
+```{r}
+# Remove leakage variable
+bank_data$duration <- NULL
+
+# Fix pdays based on your dataset ( -1 = not contacted )
+bank_data$previous_contact <- ifelse(bank_data$pdays == -1, "no", "yes")
+bank_data$previous_contact <- factor(bank_data$previous_contact)
+
+```
+
+```{r}
+#Convert categorical variables to factors
+factor_vars <- c("job","marital","education","default","housing",
+                 "loan","contact","month","poutcome","previous_contact")
+
+bank_data[factor_vars] <- lapply(bank_data[factor_vars], factor)
+
+```
+
+```{r}
+# Train-test split
+set.seed(123)  # ensures reproducibility
+
+n <- nrow(bank_data)
+train_index <- sample(1:n, size = 0.7 * n)
+
+train <- bank_data[train_index, ]
+test  <- bank_data[-train_index, ]
+
+# Check dimensions
+dim(train)
+dim(test)
+
+prop.table(table(train$y))
+prop.table(table(test$y))
+```
+
+```{r}
+#Logistic Regression
+
+full_model <- glm(
+  y ~ age + job + marital + education + default + housing +
+      loan + contact + month + campaign + previous + previous_contact + poutcome + balance,
+  data = train,
+  family = binomial
+)
+
+summary(full_model)
+
+```
+
+```{r}
+step_model <- step(full_model, direction = "both", trace = FALSE)
+summary(step_model)
+```
+
+```{r}
+library(car)
+vif(step_model)
+
+```
+
+```{r}
+final_model <- glm(
+  y ~ job + marital + education + housing + loan + contact +
+      month + campaign + poutcome + balance,
+  data = train,
+  family = binomial
+)
+
+summary(final_model)
+
+```
+
+```{r}
+vif(final_model)
+```
+
+```{r}
+test$prob <- predict(final_model, newdata = test, type = "response")
+test$pred <- ifelse(test$prob > 0.5, "yes", "no")
+
+#Confusion Metrics
+table(Predicted = test$pred, Actual = test$y)
+
+#Accuracy
+mean(test$pred == test$y)
+
+# ROC & AUC
+library(pROC)
+roc_obj <- roc(test$y, test$prob)
+auc(roc_obj)
+plot(roc_obj)
+
+```
+
+```{r}
+#Try different cutoff
+
+thresholds <- seq(0.1, 0.5, by = 0.05)
+
+for (t in thresholds) {
+  pred <- ifelse(test$prob > t, "yes", "no")
+  cm <- table(Predicted = pred, Actual = test$y)
+  sensitivity <- cm["yes","yes"] / (cm["yes","yes"] + cm["no","yes"])
+  specificity <- cm["no","no"] / (cm["no","no"] + cm["yes","no"])
+  cat("\nThreshold:", t,
+      "Sensitivity:", round(sensitivity,3),
+      "Specificity:", round(specificity,3))
+}
+coords(roc_obj, "best", ret="threshold", best.method="youden")
+
+```
+
+**We selected a 0.155 threshold**
+
+The default 0.5 threshold produced very low sensitivity because only a small proportion of customers subscribe, causing the model to classify most cases as ‘no.’ To avoid losing high-potential customers, we applied Youden’s Index to identify the optimal decision threshold. The best cutoff was 0.155, which provides the strongest balance between sensitivity and specificity. Lowering the threshold allows the model to capture substantially more potential subscribers while maintaining acceptable precision—making it a more effective strategy for targeted marketing.
+
+```{r}
+# Best threshold from Youden Index
+best_t <- 0.1550712   # or use: coords(roc_obj, "best", ret="threshold", best.method="youden")
+
+# Predict using the new threshold
+test$pred_best <- ifelse(test$prob > best_t, "yes", "no")
+
+# Confusion matrix
+cm_best <- table(Predicted = test$pred_best, Actual = test$y)
+cm_best
+
+# Accuracy
+accuracy_best <- mean(test$pred_best == test$y)
+accuracy_best
+
+# Sensitivity (Recall for "yes")
+sensitivity_best <- cm_best["yes", "yes"] /
+                    (cm_best["yes", "yes"] + cm_best["no", "yes"])
+sensitivity_best
+
+# Specificity (Recall for "no")
+specificity_best <- cm_best["no", "no"] /
+                    (cm_best["no", "no"] + cm_best["yes", "no"])
+specificity_best
+
+# Optional: Print everything clearly
+cat("\nThreshold:", best_t,
+    "\nAccuracy:", round(accuracy_best,4),
+    "\nSensitivity:", round(sensitivity_best,4),
+    "\nSpecificity:", round(specificity_best,4), "\n")
+
+```
+
+## 1. Model: **Logistic Regression (Summary)**
+
+#### **Data Cleaning & Preparation**
+
+We converted categorical variables into factors and engineered the `previous_contact` variable to reflect prior outreach more clearly. This ensured that the logistic regression model could interpret the predictors correctly without structural issues.
+
+#### **Logistic Regression Model**
+
+The full model allowed us to assess the initial influence of all predictors, but it also revealed several insignificant or overlapping variables, so we used AIC-based stepwise selection to remove redundant or non-informative variables while retaining predictors that meaningfully improved overall model fit. This produced a more stable and interpretable model.
+
+#### **Key Predictors Identified**
+
+After stepwise refinement, several predictors remained highly influential. Positive drivers included higher education levels (secondary and tertiary), retired or student job status, successful prior campaign outcomes, and higher account balance. Negative influences included holding housing or personal loans, contacting customers via telephone or unknown channels, and certain campaign months such as July, August, and November. These directional effects provide an initial understanding of the customer segments more likely or less likely to respond.
+
+#### **Model Evaluation (ROC & AUC)**
+
+The logistic model achieved an **AUC** of approximately **0.76,** indicating solid baseline discrimination despite the dataset’s class imbalance.
+
+#### **Threshold Optimization (Youden Index)**
+
+Because the default 0.50 threshold missed many potential subscribers, we applied Youden’s Index to find the optimal cutoff. A threshold of **0.155** provided the best balance between sensitivity and specificity, making the model more effective for identifying potential ‘yes’ cases.
+
+## 2. Random Forest
+
+```{r}
+library(randomForest)
+
+set.seed(123)
+
+x_train <- subset(train, select = -y)
+y_train <- train$y
+
+```
+
+```{r}
+set.seed(123)
+
+tune_res <- tuneRF(
+  x = x_train,
+  y = y_train,
+  stepFactor = 1.5,   
+  improve    = 0.005, 
+  ntreeTry   = 300,   
+  trace      = TRUE,
+  plot       = TRUE  )
+```
+
+```{r}
+set.seed(123)
+
+rf_model <- randomForest(
+  y ~ .,
+  data = train,
+  ntree = 500,
+  mtry  = 2,
+  importance = TRUE
+)
+
+rf_model
+
+```
+
+```{r}
+rf_prob <- predict(rf_model, newdata=test, type="prob")[,2]
+library(pROC)
+roc_rf <- roc(test$y, rf_prob)
+coords(roc_rf, "best", ret="threshold")
+```
+
+```{r}
+library(pROC)
+rf_prob <- predict(rf_model, newdata=test, type="prob")[,2]
+roc_rf <- roc(test$y, rf_prob)
+
+best_t <- as.numeric(coords(roc_rf, "best", ret="threshold"))
+
+rf_pred2 <- factor(ifelse(rf_prob > best_t, "yes", "no"),
+                   levels = c("no","yes"))
+
+table(Predicted = rf_pred2, Actual = test$y)
+
+```
+
+```{r}
+importance(rf_model)
+varImpPlot(rf_model,
+           sort = TRUE,
+           n.var = min(20, ncol(train)-1),
+           main = "Random Forest Variable Importance")
+
+```
+
+```{r}
+library(pdp)
+partial(rf_model, pred.var = "age", plot = TRUE)
+partial(rf_model, pred.var = "campaign", plot = TRUE)
+partial(rf_model, pred.var = "balance", plot = TRUE)
+partial(rf_model, pred.var = "pdays", plot = TRUE)
+
+```
+
+## 2. Random Forest model (Summary)
+
+We trained a Random Forest model (500 trees) to capture nonlinear patterns and identify which variables most strongly influence subscription to the term deposit. We extracted variable importance rankings and generated partial dependence plots for the top predictors.
+
+## Key Findings
+
+1.  **Month is the strongest predictor:** Subscription probability varies significantly by contact month, indicating clear seasonality effects.
+
+2.  **Previous campaign outcome strongly predicts success:** Customers with a prior successful interaction have a much higher likelihood of subscribing.
+
+3.  **Age shows a nonlinear pattern:** Middle-aged customers (around 30–55) have the highest predicted probability. Younger and older customers show lower interest.
+
+4.  **pdays indicates recency matters:** Customers contacted recently, or first-time contacts, are more likely to subscribe than those contacted a long time ago.
+
+5.  **Balance shows diminishing returns:** Moderate balances correspond to higher predicted probability, while very low and very high balances are associated with lower probability.
+
+6.  **Campaign frequency has a negative effect:** As the number of contact attempts increases, subscription probability declines, suggesting diminishing effectiveness with repeated calls.
+
+The Random Forest model suggests that campaign timing, prior interactions, age, and contact recency are key drivers of customer response. Targeting should prioritize middle-aged customers during high-performing months, especially those with successful prior outcomes or recent contact
+
+## 3. Decision Tree
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+# Split data
+set.seed(123)
+index <- sample(1:nrow(bank_data), 0.7 * nrow(bank_data))
+train <- bank_data[index, ]
+test  <- bank_data[-index, ]
+
+# Fit decision tree
+dt_model <- rpart(y ~ ., data = train, method = "class", cp = 0.01)
+
+printcp(dt_model)
+plotcp(dt_model)
+```
+
+```{r}
+best_cp <- 0.029
+dt_pruned <- prune(dt_model, cp = best_cp)
+
+library(rpart.plot)
+rpart.plot(dt_pruned, type = 2, extra = 104, fallen.leaves = TRUE)
+
+dt_pred <- predict(dt_pruned, test, type = "class")
+table(Predicted = dt_pred, Actual = test$y)
+
+```
+
+## 3. Decision Tree (Summary)
+
+A pruned classification tree was built using cross-validation to determine the optimal complexity parameter (cp = 0.029). After pruning, the tree produced a single split based on *poutcome* (previous marketing outcome). This reflects that no other variable provided a sufficiently stable improvement in cross-validated accuracy.
+
+The resulting model indicates that previous campaign success is the strongest discriminator: customers whose previous outcome was “success” show a markedly higher probability of subscribing (≈65%), whereas all other groups (“failure”, “other”, “unknown”) show very low subscription rates (≈10%). Although the tree has limited predictive performance due to the extreme class imbalance, it provides a clear and interpretable insight into which variable most differentiates customer behavior.
+
+## 4. Cluster
+
+```{r}
+# Data rangling
+cluster_data <- train %>%
+  select(age, balance, pdays, campaign, previous, poutcome)
+
+cluster_dummy <- model.matrix(~ poutcome, data = cluster_data)[, -1]
+
+cluster_numeric <- cluster_data %>%
+  select(-poutcome) %>%
+  cbind(cluster_dummy)
+
+cluster_scaled <- scale(cluster_numeric)
+
+
+
+```
+
+```{r}
+set.seed(123)
+sample_rows <- sample(1:nrow(cluster_scaled), size = 0.15 * nrow(cluster_scaled))
+cluster_sample <- cluster_scaled[sample_rows, ]
+
+wss <- numeric(10)
+for (k in 1:10) {
+  km_temp <- kmeans(cluster_sample, centers = k, nstart = 20)
+  wss[k] <- km_temp$tot.withinss
+}
+
+plot(1:10, wss, type = "b", pch = 19,
+     xlab = "Number of Clusters (k)",
+     ylab = "Within-Cluster Sum of Squares",
+     main = "Elbow Method for Choosing K")
+
+```
+
+```{r}
+
+# run kmeans
+k4 <- kmeans(cluster_scaled, centers = 4, nstart = 20)
+
+# assign clusters to train
+train$cluster <- k4$cluster
+
+```
+
+```{r}
+k4$centers
+```
+
+```{r}
+train$cluster <- k4$cluster 
+
+cluster_yes_rate <- train %>%
+  group_by(k4$cluster) %>%
+  summarise(
+    total = n(),
+    yes = sum(y == "yes"),
+    yes_rate = mean(y == "yes")
+  )
+
+cluster_yes_rate
+
+
+```
+
+```{r}
+train %>%
+  group_by(cluster) %>%
+  summarise(across(c(age, balance, pdays, campaign, previous), mean))
+```
+
+## 4. Cluster (Summary)
+
+To identify distinct customer segments and uncover which groups are most likely to subscribe to the term deposit, we performed a K-means clustering analysis using key behavioral and demographic variables: age, account balance, days since last contact (pdays), number of campaign contacts, and previous contact history (previous and poutcome). After scaling the data and evaluating multiple values of *k*, a four-cluster solution was selected as the most interpretable and meaningful for marketing purposes.
+
+The four clusters revealed clear differences in customer engagement patterns:
+
+-   **Cluster 3 – Warm Re-engagement Leads (Highest success rate: 64.9%)**\
+
+    Customers in this group have been contacted multiple times in the past and show a moderate time gap since their last interaction. Their strong historical engagement makes them the most responsive segment and the primary target for focused follow-up campaigns.
+
+-   **Cluster 4 – Reactivation Candidates (Yes rate: 13.5%)**\
+
+    Similar to Cluster 3 but with longer gaps since last contact. These customers still show above-average conversion potential and can be effectively reached through reactivation efforts.
+
+-   **Cluster 1 – Young, Low-Engagement Customers (Yes rate: 9.4%)**\
+
+    This is the youngest segment with low balances and no prior contact history. Their low response rate suggests they are not ideal for high-cost outreach.
+
+-   **Cluster 2 – Older, Unfamiliar Customers (Yes rate: 9.0%)**\
+
+    Although financially stable, this group has almost no previous contact experience. They tend to be less receptive to marketing messages and are not recommended as a priority segment.
